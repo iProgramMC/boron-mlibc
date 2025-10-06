@@ -20,6 +20,8 @@ typedef uint64_t KAFFINITY;
 // Note. We define it as a qword, and cast it down later if needed.
 #define AFFINITY_ALL ((KAFFINITY) ~0ULL)
 
+#define MAXIMUM_WAIT_BLOCKS (64)
+
 typedef int KPRIORITY;
 
 enum

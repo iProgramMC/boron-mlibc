@@ -11,8 +11,8 @@ Abstract:
 Author:
 	iProgramInCpp - 15 July 2025
 ***/
-#include <boron.h>
-#include <atom.h>
+#include <boron/boron.h>
+#include <boron/atom.h>
 
 // If this option is set to 1, then multiple waiters wake up at the same time
 // when a thread releases a critical section.  This can improve performance in

@@ -12,6 +12,7 @@ sysdep_supported_options = {
 rtld_sources += files(
 	'generic/rtld_calls.S',
 	'generic/rtld_csect.c',
+	'generic/boron.cpp',
 )
 
 libc_sources += files(

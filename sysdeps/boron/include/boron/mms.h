@@ -36,7 +36,7 @@ enum ACCESS_FLAG
 };
 
 // Page Size definition
-#ifdef TARGET_AMD64
+#ifdef __x86_64__
 #define PAGE_SIZE (0x1000)
 #else
 #error Define page size here!

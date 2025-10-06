@@ -14,14 +14,14 @@ Author:
 ***/
 #pragma once
 
-#ifdef TARGET_AMD64
+#ifdef __x86_64__
 #define IS_64_BIT
 #else
 #error Add your platform here!
 #endif
 
 // In the future it should look something like this:
-// #if defined TARGET_AMD64 || defined TARGET_RISCV64 || defined TARGET_AARCH64
+// #if defined __x86_64__ || defined TARGET_RISCV64 || defined TARGET_AARCH64
 // #    define IS_64_BIT
 // #else if defined TARGET_I486 || defined TARGET_ARM || defined TARGET_MIPS
 // #    define IS_32_BIT
