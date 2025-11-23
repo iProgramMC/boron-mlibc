@@ -20,7 +20,9 @@ libc_sources += files(
 	'generic/boron.cpp',
 )
 
-libc_deps += meson.get_compiler('c').find_library('boron', required: true)
+if not headers_only
+	libc_deps += meson.get_compiler('c').find_library('boron', required: true)
+endif
 
 if not no_headers
 	install_headers(
@@ -118,11 +120,11 @@ if not no_headers
 endif
 
 if not headers_only
-	crt = custom_target('crt0',
+	crt = custom_target('crt1',
 		build_by_default: true,
 		command: c_compiler.cmd_array() + ['-c', '-o', '@OUTPUT@', '@INPUT@'],
-		input: 'crt-x86_64/crt0.S',
-		output: 'crt0.o',
+		input: 'crt-x86_64/crt1.S',
+		output: 'crt1.o',
 		install: true,
 		install_dir: get_option('libdir')
 	)
