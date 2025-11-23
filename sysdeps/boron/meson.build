@@ -15,6 +15,7 @@ rtld_sources += files(
 	'generic/boron.cpp',
 )
 
+# note: links to ld.so's symbols for now
 libc_sources += files(
 	'generic/boron.cpp',
 )
