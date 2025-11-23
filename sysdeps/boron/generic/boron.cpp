@@ -31,7 +31,11 @@ OPEN_FILE, *POPEN_FILE;
 
 namespace mlibc {
 
+#ifdef MLIBC_BUILDING_RTLD
+constexpr int MAX_FDS = 64; // RTLD doesn't need that many files.  Increase if you need more than like 64 libraries
+#else
 constexpr int MAX_FDS = 1024;
+#endif
 
 // Translates a status code to an errno.
 const int g_statusToErrno[] = {
@@ -358,6 +362,8 @@ int sys_read(int fd, void* buf, size_t count, ssize_t* bytes_read)
 	return TranslateStatus(Status);
 }
 
+#ifndef MLIBC_BUILDING_RTLD
+
 int sys_write(int fd, const void* buf, size_t count, ssize_t* bytes_read)
 {
 	POPEN_FILE File = NULL;
@@ -376,6 +382,8 @@ int sys_write(int fd, const void* buf, size_t count, ssize_t* bytes_read)
 	OSLeaveCriticalSection(&File->Lock);
 	return TranslateStatus(Status);
 }
+
+#endif
 
 int sys_seek(int fd, off_t offset, int whence, off_t* new_offset)
 {
@@ -521,6 +529,8 @@ int sys_vm_map(void *hint, size_t size, int prot, int flags, int fd, off_t offse
 	return 0;
 }
 
+#ifndef MLIBC_BUILDING_RTLD
+
 int sys_vm_unmap(void* pointer, size_t size)
 {
 	// TODO: Allow partial unmapping.
@@ -543,8 +553,6 @@ int sys_vm_protect(void* pointer, size_t size, int prot)
 	
 	return 0;
 }
-
-#ifndef MLIBC_BUILDING_RTLD
 
 void sys_exit(int code)
 {

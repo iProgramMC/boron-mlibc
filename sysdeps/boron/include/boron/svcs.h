@@ -20,6 +20,8 @@ BSTATUS OSCreateEvent(PHANDLE OutHandle, POBJECT_ATTRIBUTES ObjectAttributes, in
 
 BSTATUS OSCreateMutex(PHANDLE OutHandle, POBJECT_ATTRIBUTES ObjectAttributes);
 
+BSTATUS OSCreatePipe(PHANDLE OutHandle, POBJECT_ATTRIBUTES ObjectAttributes, size_t BufferSize, bool NonBlock);
+
 #ifdef IS_BORON_DLL
 
 BSTATUS OSCreateProcessInternal(
@@ -40,6 +42,15 @@ BSTATUS OSCreateThread(
 	bool CreateSuspended
 );
 
+BSTATUS OSDeviceIoControl(
+	HANDLE FileHandle,
+	int IoControlCode,
+	void* InBuffer,
+	size_t InBufferSize,
+	void* OutBuffer,
+	size_t OutBufferSize
+);
+
 BSTATUS OSDuplicateHandle(HANDLE SourceHandle, HANDLE DestinationProcessHandle, PHANDLE OutNewHandle, int OpenFlags);
 
 NO_RETURN void OSExitProcess(int ExitCode);
@@ -55,7 +66,11 @@ BSTATUS OSFreeVirtualMemory(
 
 BSTATUS OSGetAlignmentFile(HANDLE Handle, size_t* AlignmentOut);
 
+void* OSGetCurrentPeb();
+
 void* OSGetCurrentTeb();
+
+BSTATUS OSGetExitCodeProcess(HANDLE ProcessHandle, int* ExitCodeOut);
 
 BSTATUS OSGetLengthFile(HANDLE FileHandle, uint64_t* Length);
 
@@ -101,9 +116,15 @@ BSTATUS OSResetDirectoryReadHead(HANDLE FileHandle);
 
 BSTATUS OSResetEvent(HANDLE EventHandle);
 
+BSTATUS OSSetCurrentPeb(void* Ptr);
+
 BSTATUS OSSetCurrentTeb(void* Ptr);
 
 BSTATUS OSSetEvent(HANDLE EventHandle);
+
+BSTATUS OSSetExitCode(int ExitCode);
+
+BSTATUS OSSetPebProcess(HANDLE ProcessHandle, void* PebPtr);
 
 BSTATUS OSSetSuspendedThread(HANDLE ThreadHandle, bool IsSuspended);
 
