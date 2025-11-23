@@ -11,8 +11,9 @@
 #ifdef TARGET_AMD64
 
 .macro CALL number, argcount, name
-	.globl \name
-	.type  \name, @function
+	.globl  \name
+	.hidden \name
+	.type   \name, @function
 \name:
 	pushq %rbp
 	movq  %rsp, %rbp
@@ -50,8 +51,9 @@
 #elif defined TARGET_I386
 
 .macro CALL number, argcount, name
-	.globl \name
-	.type  \name, @function
+	.globl  \name
+	.hidden \name
+	.type   \name, @function
 \name:
 	pushl %ebp
 	movl  %esp, %ebp

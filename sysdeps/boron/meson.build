@@ -20,6 +20,8 @@ libc_sources += files(
 	'generic/boron.cpp',
 )
 
+libc_deps += meson.get_compiler('c').find_library('boron', required: true)
+
 if not no_headers
 	install_headers(
 		'include/abi-bits/access.h',
