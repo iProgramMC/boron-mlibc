@@ -10,9 +10,13 @@
 #include "obs.h"
 #include "ios.h"
 #include "pss.h"
+#include "ttys.h"
 #include "svcs.h"
 
 // OSDLL features
 #include "heap.h"
 #include "csect.h"
 #include "proc.h"
+#include "eb.h"
+#include "io.h"
+#include "env.h"

@@ -20,6 +20,10 @@ Author:
 #include <stdarg.h>
 #include <stdbool.h>
 
+#ifdef __x86_64__
+#define TARGET_AMD64
+#endif
+
 #define PACKED        __attribute__((packed))
 #define NO_RETURN     __attribute__((noreturn))
 #define RETURNS_TWICE __attribute__((returns_twice))

@@ -14,6 +14,8 @@ Author:
 ***/
 #pragma once
 
+#include "ioctl.h"
+
 typedef struct _FCB FCB, *PFCB;
 
 // TODO: I think we should actually phase out the status code from here.
@@ -75,8 +77,7 @@ typedef struct _IO_STATUS_BLOCK
 		// BackingMemory
 		struct
 		{
-			void*  Start;  // Start should be aligned to 4096 bytes
-			size_t Length; // Length should be a multiple of 4096
+			uintptr_t PhysicalAddress;
 		}
 		BackingMemory;
 #endif
@@ -115,3 +116,50 @@ typedef struct _IO_DIRECTORY_ENTRY
 	int Type;
 }
 IO_DIRECTORY_ENTRY, *PIO_DIRECTORY_ENTRY;
+
+// The operation may not block.  If a situation arises where this operation would block, it is immediately ended.
+#define IO_RW_NONBLOCK         (1 << 0)
+
+// This flag is set when the write operation is intended to append to the specified file instead of writing to a
+// certain position inside it.  It automatically puts the file offset at the end of the file.
+#define IO_RW_APPEND           (1 << 1)
+
+// This flag is set when the caller wants to block (if the stream is empty), and not block (if the stream has data).
+// Currently supported when reading pipes, terminal objects, and keyboards.
+#define IO_RW_NONBLOCK_UNLESS_EMPTY (1 << 2)
+
+// This flag is set when the caller wants the read operation to end early on a new line.  This is currently supported
+// for reading pipes and terminal objects.
+#define IO_RW_FINISH_ON_NEWLINE     (1 << 3)
+
+// This flag is set when the caller wants to use the kernel's built-in file offset instead of providing its own file
+// offset.  This is useful for POSIX compatibility, as two different processes expect to modify the same file offset
+// pointer, because the file description (and Boron's file object) is shared and both processes have references to
+// the same object.
+#define IO_RW_SHARED_FILE_OFFSET    (1 << 4)
+
+#ifdef KERNEL
+
+// This write should terminate the corresponding read operation.  Supported for pipe objects.
+#define IO_RW_TERMINATE_READ   (1 << 28)
+
+// Flags for IO_READ_METHOD and IO_WRITE_METHOD:
+
+// The FCB's rwlock is locked exclusively.  If there's a need for the current thread to own the rwlock exclusively,
+// and this isn't checked, then the routine must release the lock and re-acquire it exclusive.
+//
+// Ignored in user mode.
+#define IO_RW_LOCKEDEXCLUSIVE  (1 << 29)
+
+// This is paging I/O.  This means memory might be very scarce or downright not available, so memory allocations
+// should be avoided.  This may make memory operations slower, but this is a worthy sacrifice considering the situation.
+#define IO_RW_PAGING           (1 << 30)
+
+// Forbidden flags for user mode.
+#define IO_RW_USER_MODE_FORBIDDEN_FLAGS (\
+	IO_RW_TERMINATE_READ | \
+	IO_RW_LOCKEDEXCLUSIVE | \
+	IO_RW_PAGING \
+)
+
+#endif

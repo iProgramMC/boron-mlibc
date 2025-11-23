@@ -31,4 +31,3 @@ enum
 };
 
 typedef NO_RETURN void(*PKTHREAD_START)(void* Context);
-

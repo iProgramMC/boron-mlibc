@@ -78,6 +78,6 @@ enum
 	FILE_STANDARD_ERROR
 };
 
-#define StandardInput  StandardIO[0]
-#define StandardOutput StandardIO[1]
-#define StandardError  StandardIO[2]
+#define StandardInput  StandardIO[FILE_STANDARD_INPUT]
+#define StandardOutput StandardIO[FILE_STANDARD_OUTPUT]
+#define StandardError  StandardIO[FILE_STANDARD_ERROR]

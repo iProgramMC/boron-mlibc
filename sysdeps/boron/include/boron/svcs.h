@@ -33,6 +33,10 @@ BSTATUS OSCreateProcessInternal(
 
 #endif
 
+BSTATUS OSCreateTerminal(PHANDLE OutHandle, POBJECT_ATTRIBUTES ObjectAttributes, size_t BufferSize);
+
+BSTATUS OSCreateTerminalIoHandles(PHANDLE OutHostHandle, PHANDLE OutSessionHandle, HANDLE TerminalHandle);
+
 BSTATUS OSCreateThread(
 	PHANDLE OutHandle,
 	HANDLE ProcessHandle,
@@ -112,9 +116,9 @@ BSTATUS OSReadFile(PIO_STATUS_BLOCK Iosb, HANDLE Handle, uint64_t ByteOffset, vo
 
 BSTATUS OSReleaseMutex(HANDLE MutexHandle);
 
-BSTATUS OSResetDirectoryReadHead(HANDLE FileHandle);
-
 BSTATUS OSResetEvent(HANDLE EventHandle);
+
+BSTATUS OSSeekFile(HANDLE FileHandle, int64_t NewOffset, int Whence);
 
 BSTATUS OSSetCurrentPeb(void* Ptr);
 
