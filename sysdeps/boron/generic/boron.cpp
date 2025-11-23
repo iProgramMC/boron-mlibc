@@ -14,15 +14,6 @@
 
 #include <mlibc/fsfd_target.hpp>
 
-typedef struct
-{
-	bool Occupied;
-	HANDLE Handle;
-	uint64_t Offset;
-	OS_CRITICAL_SECTION Lock;
-}
-OPEN_FILE, *POPEN_FILE;
-
 #ifdef MLIBC_BUILDING_RTLD
 #define THREAD_LOCAL_COND
 #else
@@ -192,44 +183,34 @@ int sys_anon_free(void* pointer, size_t size)
 
 // NOTE: DO NOT enter g_fileTableCS *after* you enter the CS of a file!
 
-static OPEN_FILE g_fileTable[MAX_FDS];
-static OS_CRITICAL_SECTION g_fileTableCS;
+static HANDLE FileTable[MAX_FDS];
+static OS_CRITICAL_SECTION FileTableLock;
+
 static THREAD_LOCAL_COND HANDLE g_currentDirectory = HANDLE_NONE;
 
 __attribute__((constructor))
 static void InitializeFileTableCS()
 {
-	BSTATUS Status = OSInitializeCriticalSection(&g_fileTableCS);
+	BSTATUS Status = OSInitializeCriticalSection(&FileTableLock);
 	if (FAILED(Status))
 		sys_libc_panic();
 }
 
 // This exits with the output file pointer locked, if it succeeds.
-static BSTATUS AllocateFD(int* FdOut)
+static BSTATUS AllocateFD(int* FdOut, HANDLE Handle)
 {
-	OSEnterCriticalSection(&g_fileTableCS);
+	OSEnterCriticalSection(&FileTableLock);
 	
 	for (int i = 0; i < MAX_FDS; i++)
 	{
-		if (g_fileTable[i].Occupied)
+		if (FileTable[i] == HANDLE_NONE)
 			continue;
 		
-		BSTATUS Status = OSInitializeCriticalSection(&g_fileTable[i].Lock);
-		if (FAILED(Status))
-		{
-			OSLeaveCriticalSection(&g_fileTableCS);
-			return Status;
-		}
-		
 		// critical section initialized, mark as occupied and return
-		g_fileTable[i].Occupied = true;
-		g_fileTable[i].Offset = 0;
-		
+		FileTable[i] = Handle;
 		*FdOut = i;
 		
-		OSEnterCriticalSection(&g_fileTable[i].Lock);
-		OSLeaveCriticalSection(&g_fileTableCS);
-		
+		OSLeaveCriticalSection(&FileTableLock);
 		return STATUS_SUCCESS;
 	}
 	
@@ -241,64 +222,34 @@ static BSTATUS ReleaseFD(int Fd)
 	if (Fd < 0 || Fd >= MAX_FDS)
 		return STATUS_INVALID_HANDLE;
 	
-	OSEnterCriticalSection(&g_fileTableCS);
-	
-	// Mark the place as not occupied.
-	OSEnterCriticalSection(&g_fileTable[Fd].Lock);
-	if (!g_fileTable[Fd].Occupied)
+	OSEnterCriticalSection(&FileTableLock);
+	if (FileTable[Fd] == HANDLE_NONE)
 	{
-		OSLeaveCriticalSection(&g_fileTable[Fd].Lock);
-		OSLeaveCriticalSection(&g_fileTableCS);
+		OSLeaveCriticalSection(&FileTableLock);
 		return STATUS_INVALID_HANDLE;
 	}
 	
-	g_fileTable[Fd].Occupied = false;
-	OSLeaveCriticalSection(&g_fileTable[Fd].Lock);
-	
-	// After this song and dance, any read() or write()
-	// on this FD should fail with STATUS_INVALID_HANDLE.
-	//
-	// However, we still have the global file table locked,
-	// so no open() operations can go through either.
-	
-	if (g_fileTable[Fd].Handle != HANDLE_NONE)
-	{
-		BSTATUS Status = OSClose(g_fileTable[Fd].Handle);
-		if (FAILED(Status))
-		{
-			sys_libc_log("ERROR: OSClose returned a failure code!\n");
-			sys_libc_panic();
-		}
-	}
-	
-	g_fileTable[Fd].Handle = HANDLE_NONE;
-	g_fileTable[Fd].Offset = 0;
-	
-	// Deinitialize this file table's critical section
-	OSDeleteCriticalSection(&g_fileTable[Fd].Lock);
-	
-	OSLeaveCriticalSection(&g_fileTableCS);
+	FileTable[Fd] = 0;
+	OSLeaveCriticalSection(&FileTableLock);
 	return STATUS_SUCCESS;
 }
 
 // This exits with the output file pointer locked, if it succeeds.
-static BSTATUS FindFileByFD(int Fd, POPEN_FILE* OutFile)
+static BSTATUS FindFileByFD(int Fd, PHANDLE OutHandle)
 {
 	if (Fd < 0 || Fd >= MAX_FDS)
 		return STATUS_INVALID_HANDLE;
 	
-	OSEnterCriticalSection(&g_fileTableCS);
+	OSEnterCriticalSection(&FileTableLock);
 	
-	if (!g_fileTable[Fd].Occupied)
+	if (FileTable[Fd] == HANDLE_NONE)
 	{
-		OSLeaveCriticalSection(&g_fileTableCS);
+		OSLeaveCriticalSection(&FileTableLock);
 		return STATUS_INVALID_HANDLE;
 	}
 	
-	OSEnterCriticalSection(&g_fileTable[Fd].Lock);
-	OSLeaveCriticalSection(&g_fileTableCS);
-	
-	*OutFile = &g_fileTable[Fd];
+	*OutHandle = FileTable[Fd];
+	OSLeaveCriticalSection(&FileTableLock);
 	return STATUS_SUCCESS;
 }
 
@@ -306,10 +257,6 @@ int sys_open(const char* pathname, int flags, mode_t mode, int* fd)
 {
 	BSTATUS Status;
 	int Fd = 0;
-	
-	Status = AllocateFD(&Fd);
-	if (FAILED(Status))
-		return TranslateStatus(Status);
 	
 	// fd allocated, now open it
 	OBJECT_ATTRIBUTES Attributes;
@@ -322,22 +269,17 @@ int sys_open(const char* pathname, int flags, mode_t mode, int* fd)
 	(void) flags;
 	(void) mode;
 	
-	POPEN_FILE File = &g_fileTable[Fd];
-	
 	HANDLE Handle;
 	Status = OSOpenFile(&Handle, &Attributes);
 	if (FAILED(Status))
+		return TranslateStatus(Status);
+	
+	Status = AllocateFD(&Fd, Handle);
+	if (FAILED(Status))
 	{
-		OSLeaveCriticalSection(&File->Lock);
-		ReleaseFD(Fd);
+		OSClose(Handle);
 		return TranslateStatus(Status);
 	}
-	
-	// file opened, now initialize everything and return
-	File->Handle = Handle;
-	File->Offset = 0;
-	File->Occupied = true;
-	OSLeaveCriticalSection(&File->Lock);
 	
 	*fd = Fd;
 	return 0;
@@ -345,41 +287,33 @@ int sys_open(const char* pathname, int flags, mode_t mode, int* fd)
 
 int sys_read(int fd, void* buf, size_t count, ssize_t* bytes_read)
 {
-	POPEN_FILE File = NULL;
-	BSTATUS Status = FindFileByFD(fd, &File);
+	HANDLE FileHandle = HANDLE_NONE;
+	BSTATUS Status = FindFileByFD(fd, &FileHandle);
 	if (FAILED(Status))
 		return TranslateStatus(Status);
 	
 	IO_STATUS_BLOCK Iosb;
-	Status = OSReadFile(&Iosb, File->Handle, File->Offset, buf, count, 0);
+	Status = OSReadFile(&Iosb, FileHandle, 0, buf, count, IO_RW_SHARED_FILE_OFFSET);
 	if (IOSUCCEEDED(Status))
-	{
 		*bytes_read = Iosb.BytesRead;
-		File->Offset += Iosb.BytesRead;
-	}
 	
-	OSLeaveCriticalSection(&File->Lock);
 	return TranslateStatus(Status);
 }
 
 #ifndef MLIBC_BUILDING_RTLD
 
-int sys_write(int fd, const void* buf, size_t count, ssize_t* bytes_read)
+int sys_write(int fd, const void* buf, size_t count, ssize_t* bytes_written)
 {
-	POPEN_FILE File = NULL;
-	BSTATUS Status = FindFileByFD(fd, &File);
+	HANDLE FileHandle = HANDLE_NONE;
+	BSTATUS Status = FindFileByFD(fd, &FileHandle);
 	if (FAILED(Status))
 		return TranslateStatus(Status);
 	
 	IO_STATUS_BLOCK Iosb;
-	Status = OSWriteFile(&Iosb, File->Handle, File->Offset, buf, count, 0, NULL);
+	Status = OSWriteFile(&Iosb, FileHandle, 0, buf, count, IO_RW_SHARED_FILE_OFFSET, NULL);
 	if (IOSUCCEEDED(Status))
-	{
-		*bytes_read = Iosb.BytesWritten;
-		File->Offset += Iosb.BytesWritten;
-	}
+		*bytes_written = Iosb.BytesWritten;
 	
-	OSLeaveCriticalSection(&File->Lock);
 	return TranslateStatus(Status);
 }
 
@@ -387,44 +321,49 @@ int sys_write(int fd, const void* buf, size_t count, ssize_t* bytes_read)
 
 int sys_seek(int fd, off_t offset, int whence, off_t* new_offset)
 {
-	POPEN_FILE File = NULL;
-	BSTATUS Status = FindFileByFD(fd, &File);
+	HANDLE FileHandle = HANDLE_NONE;
+	BSTATUS Status = FindFileByFD(fd, &FileHandle);
 	if (FAILED(Status))
 		return TranslateStatus(Status);
 	
-	uint64_t Length = 0;
-	switch (whence)
-	{
-		case SEEK_SET:
-			File->Offset = offset;
-			break;
-		
+	int Whence = -1;
+	switch (whence) {
 		case SEEK_CUR:
-			File->Offset += offset;
+			Whence = IO_SEEK_CUR;
 			break;
-		
+		case SEEK_SET:
+			Whence = IO_SEEK_SET;
+			break;
 		case SEEK_END:
-			Status = OSGetLengthFile(File->Handle, &Length);
-			if (!IOFAILED(Status))
-				File->Offset = (off_t)Length + offset;
-			
-			break;
-		
-		default:
-			Status = STATUS_INVALID_PARAMETER;
+			Whence = IO_SEEK_END;
 			break;
 	}
 	
-	if (!FAILED(Status))
-		*new_offset = File->Offset;
+	if (Whence == -1)
+		return TranslateStatus(STATUS_INVALID_PARAMETER);
 	
-	OSLeaveCriticalSection(&File->Lock);
+	uint64_t NewOffset = 0;
+	Status = OSSeekFile(FileHandle, (int64_t) offset, Whence, &NewOffset);
+	
+	if (!FAILED(Status))
+		*new_offset = (off_t) NewOffset;
+	
 	return TranslateStatus(Status);
 }
 
 int sys_close(int fd)
 {
-	return TranslateStatus(ReleaseFD(fd));
+	HANDLE FileHandle = HANDLE_NONE;
+	BSTATUS Status = FindFileByFD(fd, &FileHandle);
+	if (FAILED(Status))
+		return TranslateStatus(Status);
+	
+	Status = OSClose(Status);
+	if (FAILED(Status))
+		return TranslateStatus(Status);
+	
+	ReleaseFD(fd);
+	return Status;
 }
 
 constexpr int FlagsToAllocationType(int flags)
@@ -463,15 +402,15 @@ int sys_vm_map(void *hint, size_t size, int prot, int flags, int fd, off_t offse
 	BSTATUS Status = STATUS_SUCCESS;
 	if (~flags & MAP_ANONYMOUS)
 	{
-		POPEN_FILE OpenFile = NULL;
-		Status = FindFileByFD(fd, &OpenFile);
+		HANDLE FileHandle;
+		Status = FindFileByFD(fd, &FileHandle);
 		if (FAILED(Status))
 			return TranslateStatus(Status);
 		
 		// first, try to map while specifying the hint
 		Status = OSMapViewOfObject(
 			CURRENT_PROCESS_HANDLE,
-			OpenFile->Handle,
+			FileHandle,
 			&BaseAddress,
 			size,
 			FlagsToAllocationType(flags),
@@ -486,7 +425,7 @@ int sys_vm_map(void *hint, size_t size, int prot, int flags, int fd, off_t offse
 			
 			Status = OSMapViewOfObject(
 				CURRENT_PROCESS_HANDLE,
-				OpenFile->Handle,
+				FileHandle,
 				&BaseAddress,
 				size,
 				FlagsToAllocationType(flags),
@@ -494,8 +433,6 @@ int sys_vm_map(void *hint, size_t size, int prot, int flags, int fd, off_t offse
 				ConvertProtection(prot)
 			);
 		}
-		
-		OSLeaveCriticalSection(&OpenFile->Lock);
 	}
 	else
 	{
