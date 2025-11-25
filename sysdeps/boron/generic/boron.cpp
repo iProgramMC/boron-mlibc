@@ -255,6 +255,8 @@ static BSTATUS AllocateFD(int* FdOut, HANDLE Handle)
 		return STATUS_SUCCESS;
 	}
 	
+	sys_libc_log("ERROR: too many handles opened!");
+	OSLeaveCriticalSection(&FileTableLock);
 	return STATUS_TOO_MANY_HANDLES;
 }
 
@@ -406,7 +408,7 @@ int sys_close(int fd)
 	if (FAILED(Status))
 		return TranslateStatus(Status);
 	
-	Status = OSClose(Status);
+	Status = OSClose(FileHandle);
 	if (FAILED(Status))
 		return TranslateStatus(Status);
 	
@@ -468,7 +470,6 @@ int sys_vm_map(void *hint, size_t size, int prot, int flags, int fd, off_t offse
 		}
 		
 		// first, try to map while specifying the hint
-		mlibc::infoLogger() << "about to call OSMapViewOfObject" << frg::endlog;
 		Status = OSMapViewOfObject(
 			CURRENT_PROCESS_HANDLE,
 			FileHandle,
@@ -478,7 +479,6 @@ int sys_vm_map(void *hint, size_t size, int prot, int flags, int fd, off_t offse
 			offset,
 			ConvertProtection(prot)
 		);
-		mlibc::infoLogger() << "done with call OSMapViewOfObject" << frg::endlog;
 		
 		if (FAILED(Status) && Status == STATUS_CONFLICTING_ADDRESSES && (~flags & MAP_FIXED))
 		{
@@ -500,7 +500,6 @@ int sys_vm_map(void *hint, size_t size, int prot, int flags, int fd, off_t offse
 	}
 	else
 	{
-		mlibc::infoLogger() << "about to call OSAllocateVirtualMemory" << frg::endlog;
 		Status = OSAllocateVirtualMemory(
 			CURRENT_PROCESS_HANDLE,
 			&BaseAddress,
@@ -508,7 +507,6 @@ int sys_vm_map(void *hint, size_t size, int prot, int flags, int fd, off_t offse
 			FlagsToAllocationType(flags),
 			ConvertProtection(prot)
 		);
-		mlibc::infoLogger() << "done call OSAllocateVirtualMemory" << frg::endlog;
 		
 		if (FAILED(Status) && Status == STATUS_CONFLICTING_ADDRESSES && (~flags & MAP_FIXED))
 		{
@@ -533,12 +531,9 @@ int sys_vm_map(void *hint, size_t size, int prot, int flags, int fd, off_t offse
 		return TranslateStatus(Status);
 	}
 	
-	mlibc::infoLogger() << "\tsucceeded, address: " << BaseAddress << frg::endlog;
 	*window = BaseAddress;
 	return 0;
 }
-
-#ifndef MLIBC_BUILDING_RTLD
 
 int sys_vm_unmap(void* pointer, size_t size)
 {
@@ -562,6 +557,8 @@ int sys_vm_protect(void* pointer, size_t size, int prot)
 	
 	return 0;
 }
+
+#ifndef MLIBC_BUILDING_RTLD
 
 void sys_exit(int code)
 {

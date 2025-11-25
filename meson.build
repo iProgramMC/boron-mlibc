@@ -278,6 +278,7 @@ elif host_machine.system() == 'nyaux'
 elif host_machine.system() == 'boron'
 	rtld_include_dirs += include_directories('sysdeps/boron/include')
 	libc_include_dirs += include_directories('sysdeps/boron/include')
+	internal_conf.set10('MLIBC_MMAP_ALLOCATE_DSO', true)
 	subdir('sysdeps/boron')
 else
 	error('No sysdeps defined for OS: ' + host_machine.system())
