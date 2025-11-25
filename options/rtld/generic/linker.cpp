@@ -25,12 +25,12 @@ enum {
 uintptr_t libraryBase = 0x41000000;
 #endif
 
-constexpr bool verbose = false;
-constexpr bool stillSlightlyVerbose = false;
-constexpr bool logBaseAddresses = false;
-constexpr bool logRpath = false;
-constexpr bool logLdPath = false;
-constexpr bool logSymbolVersions = false;
+constexpr bool verbose = true;
+constexpr bool stillSlightlyVerbose = true;
+constexpr bool logBaseAddresses = true;
+constexpr bool logRpath = true;
+constexpr bool logLdPath = true;
+constexpr bool logSymbolVersions = true;
 constexpr bool eagerBinding = true;
 
 #if defined(__x86_64__) || defined(__i386__)

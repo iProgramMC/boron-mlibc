@@ -80,11 +80,14 @@ const int g_statusToErrno[] = {
 	ENOENT,  // STATUS_NO_SUCH_DEVICES
 	EIEIO,   // STATUS_UNLOAD, should never be seen
 	ENOTDIR, // STATUS_NOT_A_DIRECTORY
+	EISDIR,  // STATUS_IS_A_DIRECTORY
 	EIO,     // STATUS_HARDWARE_IO_ERROR
 	EINVAL,  // STATUS_UNALIGNED_OPERATION
 	EIEIO,   // STATUS_NOT_THIS_FILE_SYSTEM, should never be seen
 	0,       // STATUS_END_OF_FILE, not a failure
 	EAGAIN,  // STATUS_BLOCKING_OPERATION, equal to EWOULDBLOCK
+	ENOTEMPTY, // STATUS_DIRECTORY_NOT_EMPTY
+	EIEIO,   // STATUS_OUT_OF_FILE_BOUNDS, not used for userspace
 	
 	ENOMEM,  // STATUS_INSUFFICIENT_VA_SPACE
 	EINVAL,  // STATUS_VA_NOT_AT_BASE
@@ -100,6 +103,11 @@ const int g_statusToErrno[] = {
 
 constexpr int TranslateStatus(BSTATUS Status)
 {
+	if (SUCCEEDED(Status))
+		return 0;
+	
+	mlibc::infoLogger() << "mlibc::TranslateStatus(" << Status << "), RA: " << __builtin_return_address(0) << "." << frg::endlog;
+	
 	if (Status >= STATUS_RANGE_ABANDONED_WAIT &&
 		Status < STATUS_RANGE_ABANDONED_WAIT + MAXIMUM_WAIT_BLOCKS)
 		return EOWNERDEAD;
@@ -413,6 +421,16 @@ constexpr int FlagsToAllocationType(int flags)
 	// by default memory is private.
 	if (flags & MAP_SHARED) AllocationType |= MEM_SHARED;
 	
+	// MAP_FIXED allows overwriting of mmap regions.
+	if (flags & MAP_FIXED)
+		AllocationType |= MEM_FIXED | MEM_OVERRIDE;
+	
+#ifdef MAP_FIXED_NOREPLACE
+	// MAP_FIXED_NOREPLACE doesn't allow overwriting mmap regions.
+	if (flags & MAP_FIXED_NOREPLACE)
+		AllocationType |= MEM_FIXED;
+#endif
+	
 	return AllocationType;
 }
 
@@ -436,8 +454,6 @@ int sys_vm_map(void *hint, size_t size, int prot, int flags, int fd, off_t offse
 		<< flags << ", " << fd << ", " << offset << ", " << window << ")" << frg::endlog;
 	INITIALIZE_FTL_IF_NEEDED();
 	
-	// Note: MAP_FIXED not supported in a complete way, because overwriting mappings
-	// is not allowed.  This isn't POSIX compliant.
 	void* BaseAddress = hint;
 	size_t ViewSize = size;
 	BSTATUS Status = STATUS_SUCCESS;
@@ -452,6 +468,7 @@ int sys_vm_map(void *hint, size_t size, int prot, int flags, int fd, off_t offse
 		}
 		
 		// first, try to map while specifying the hint
+		mlibc::infoLogger() << "about to call OSMapViewOfObject" << frg::endlog;
 		Status = OSMapViewOfObject(
 			CURRENT_PROCESS_HANDLE,
 			FileHandle,
@@ -461,6 +478,7 @@ int sys_vm_map(void *hint, size_t size, int prot, int flags, int fd, off_t offse
 			offset,
 			ConvertProtection(prot)
 		);
+		mlibc::infoLogger() << "done with call OSMapViewOfObject" << frg::endlog;
 		
 		if (FAILED(Status) && Status == STATUS_CONFLICTING_ADDRESSES && (~flags & MAP_FIXED))
 		{
@@ -482,6 +500,7 @@ int sys_vm_map(void *hint, size_t size, int prot, int flags, int fd, off_t offse
 	}
 	else
 	{
+		mlibc::infoLogger() << "about to call OSAllocateVirtualMemory" << frg::endlog;
 		Status = OSAllocateVirtualMemory(
 			CURRENT_PROCESS_HANDLE,
 			&BaseAddress,
@@ -489,8 +508,9 @@ int sys_vm_map(void *hint, size_t size, int prot, int flags, int fd, off_t offse
 			FlagsToAllocationType(flags),
 			ConvertProtection(prot)
 		);
+		mlibc::infoLogger() << "done call OSAllocateVirtualMemory" << frg::endlog;
 		
-		if (FAILED(Status) && Status == STATUS_CONFLICTING_ADDRESSES)
+		if (FAILED(Status) && Status == STATUS_CONFLICTING_ADDRESSES && (~flags & MAP_FIXED))
 		{
 			// try without specifying the hint
 			BaseAddress = NULL;
@@ -513,6 +533,7 @@ int sys_vm_map(void *hint, size_t size, int prot, int flags, int fd, off_t offse
 		return TranslateStatus(Status);
 	}
 	
+	mlibc::infoLogger() << "\tsucceeded, address: " << BaseAddress << frg::endlog;
 	*window = BaseAddress;
 	return 0;
 }
