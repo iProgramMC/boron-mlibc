@@ -21,6 +21,7 @@ Author:
 
 #define DEFAULT_MAX_SPINS 1024
 
+__attribute__((visibility("hidden")))
 BSTATUS OSInitializeCriticalSectionWithSpinCount(POS_CRITICAL_SECTION CriticalSection, int MaxSpins)
 {
 	CriticalSection->Locked = 0;
@@ -36,11 +37,13 @@ BSTATUS OSInitializeCriticalSectionWithSpinCount(POS_CRITICAL_SECTION CriticalSe
 	return Status;
 }
 
+__attribute__((visibility("hidden")))
 BSTATUS OSInitializeCriticalSection(POS_CRITICAL_SECTION CriticalSection)
 {
 	return OSInitializeCriticalSectionWithSpinCount(CriticalSection, DEFAULT_MAX_SPINS);
 }
 
+__attribute__((visibility("hidden")))
 void OSDeleteCriticalSection(POS_CRITICAL_SECTION CriticalSection)
 {
 	OSClose(CriticalSection->EventHandle);
@@ -63,11 +66,13 @@ bool OSTryEnterCriticalSection_(POS_CRITICAL_SECTION CriticalSection)
 	return false;
 }
 
+__attribute__((visibility("hidden")))
 bool OSTryEnterCriticalSection(POS_CRITICAL_SECTION CriticalSection)
 {
 	return OSTryEnterCriticalSection_(CriticalSection);
 }
 
+__attribute__((visibility("hidden")))
 void OSEnterCriticalSection(POS_CRITICAL_SECTION CriticalSection)
 {
 	for (int i = 0; i < CriticalSection->MaxSpins; i++)
@@ -88,6 +93,7 @@ void OSEnterCriticalSection(POS_CRITICAL_SECTION CriticalSection)
 	}
 }
 
+__attribute__((visibility("hidden")))
 void OSLeaveCriticalSection(POS_CRITICAL_SECTION CriticalSection)
 {
 	AtStore(CriticalSection->Locked, 0);

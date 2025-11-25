@@ -25,6 +25,8 @@ libc_sublibs = [ ]
 libc_deps = [ ]
 rtld_deps = [ ]
 
+rtld_link_args = [ ]
+
 headers_only = get_option('headers_only')
 no_headers = get_option('no_headers')
 library_type = get_option('default_library')
@@ -544,6 +546,7 @@ if not headers_only
 		ld_shared_lib = shared_library(ld_library_name, rtld_sources + rtld_dso_sources,
 			name_prefix: '',
 			cpp_args: ld_cpp_args,
+			link_args: rtld_link_args,
 			include_directories: rtld_include_dirs,
 			dependencies: rtld_deps + rtlib_deps,
 			install: true

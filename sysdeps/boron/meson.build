@@ -10,18 +10,23 @@ sysdep_supported_options = {
 # as such, we'll need to include some libboron.so sources
 # instead.
 rtld_sources += files(
-	'generic/rtld_calls.S',
+	'x86_64/rtld_entry.S',
+	'x86_64/rtld_calls.S',
 	'generic/rtld_csect.c',
 	'generic/boron.cpp',
+	'generic/entry.cpp',
 )
 
 # note: links to ld.so's symbols for now
 libc_sources += files(
 	'generic/boron.cpp',
+	'generic/entry.cpp',
 )
 
 if not headers_only
 	libc_deps += meson.get_compiler('c').find_library('boron', required: true)
+	
+	rtld_link_args = [ '-Wl,-e,_boron_start' ]
 endif
 
 if not no_headers

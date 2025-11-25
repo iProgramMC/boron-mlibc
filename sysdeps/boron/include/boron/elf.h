@@ -15,7 +15,7 @@ Author:
 #ifndef BORON_ELF_H
 #define BORON_ELF_H
 
-#include <main.h>
+#include "main.h"
 
 typedef NO_RETURN void(*ELF_ENTRY_POINT)();
 

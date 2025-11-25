@@ -14,6 +14,8 @@
 
 #include <mlibc/fsfd_target.hpp>
 
+#include <mlibc/debug.hpp>
+
 #ifdef MLIBC_BUILDING_RTLD
 #define THREAD_LOCAL_COND
 #else
@@ -115,6 +117,7 @@ constexpr int TranslateStatus(BSTATUS Status)
 void sys_libc_log(const char* message)
 {
 	OSOutputDebugString(message, strlen(message));
+	OSOutputDebugString("\n", 1);
 }
 
 [[noreturn]]
@@ -152,17 +155,28 @@ int sys_anon_allocate(size_t size, void** pointer)
 {
 	size_t Size = size;
 	
+	void* Pointer = NULL;
 	BSTATUS Status = OSAllocateVirtualMemory(
 		CURRENT_PROCESS_HANDLE,
-		pointer,
+		&Pointer,
 		&Size,
 		MEM_COMMIT | MEM_RESERVE,
 		PAGE_READ | PAGE_WRITE
 	);
 	
 	if (FAILED(Status))
+	{
+	#ifdef MLIBC_BUILDING_RTLD
+		sys_libc_log("Interpreter sys_anon_allocate fail\n");
+	#else
+		sys_libc_log("Libc sys_anon_allocate fail\n");
+	#endif
+	}
+	
+	if (FAILED(Status))
 		return TranslateStatus(Status);
 	
+	*pointer = Pointer;
 	return 0;
 }
 
@@ -185,10 +199,28 @@ int sys_anon_free(void* pointer, size_t size)
 
 static HANDLE FileTable[MAX_FDS];
 static OS_CRITICAL_SECTION FileTableLock;
-
 static THREAD_LOCAL_COND HANDLE g_currentDirectory = HANDLE_NONE;
 
+#ifdef MLIBC_BUILDING_RTLD
+
+static bool FileTableInitialized = false;
+
+#define INITIALIZE_FTL_IF_NEEDED() do { \
+	if (!FileTableInitialized) {     \
+		FileTableInitialized = true; \
+		InitializeFileTableCS();     \
+	}                                \
+} while (0)
+
+#else
+
+#define INITIALIZE_FTL_IF_NEEDED()
+
+// constructor attribute applies to the below function
 __attribute__((constructor))
+
+#endif
+
 static void InitializeFileTableCS()
 {
 	BSTATUS Status = OSInitializeCriticalSection(&FileTableLock);
@@ -199,11 +231,12 @@ static void InitializeFileTableCS()
 // This exits with the output file pointer locked, if it succeeds.
 static BSTATUS AllocateFD(int* FdOut, HANDLE Handle)
 {
+	INITIALIZE_FTL_IF_NEEDED();
 	OSEnterCriticalSection(&FileTableLock);
 	
 	for (int i = 0; i < MAX_FDS; i++)
 	{
-		if (FileTable[i] == HANDLE_NONE)
+		if (FileTable[i] != HANDLE_NONE)
 			continue;
 		
 		// critical section initialized, mark as occupied and return
@@ -219,6 +252,7 @@ static BSTATUS AllocateFD(int* FdOut, HANDLE Handle)
 
 static BSTATUS ReleaseFD(int Fd)
 {
+	INITIALIZE_FTL_IF_NEEDED();
 	if (Fd < 0 || Fd >= MAX_FDS)
 		return STATUS_INVALID_HANDLE;
 	
@@ -237,6 +271,7 @@ static BSTATUS ReleaseFD(int Fd)
 // This exits with the output file pointer locked, if it succeeds.
 static BSTATUS FindFileByFD(int Fd, PHANDLE OutHandle)
 {
+	INITIALIZE_FTL_IF_NEEDED();
 	if (Fd < 0 || Fd >= MAX_FDS)
 		return STATUS_INVALID_HANDLE;
 	
@@ -255,6 +290,7 @@ static BSTATUS FindFileByFD(int Fd, PHANDLE OutHandle)
 
 int sys_open(const char* pathname, int flags, mode_t mode, int* fd)
 {
+	INITIALIZE_FTL_IF_NEEDED();
 	BSTATUS Status;
 	int Fd = 0;
 	
@@ -287,6 +323,7 @@ int sys_open(const char* pathname, int flags, mode_t mode, int* fd)
 
 int sys_read(int fd, void* buf, size_t count, ssize_t* bytes_read)
 {
+	INITIALIZE_FTL_IF_NEEDED();
 	HANDLE FileHandle = HANDLE_NONE;
 	BSTATUS Status = FindFileByFD(fd, &FileHandle);
 	if (FAILED(Status))
@@ -304,6 +341,7 @@ int sys_read(int fd, void* buf, size_t count, ssize_t* bytes_read)
 
 int sys_write(int fd, const void* buf, size_t count, ssize_t* bytes_written)
 {
+	INITIALIZE_FTL_IF_NEEDED();
 	HANDLE FileHandle = HANDLE_NONE;
 	BSTATUS Status = FindFileByFD(fd, &FileHandle);
 	if (FAILED(Status))
@@ -321,6 +359,7 @@ int sys_write(int fd, const void* buf, size_t count, ssize_t* bytes_written)
 
 int sys_seek(int fd, off_t offset, int whence, off_t* new_offset)
 {
+	INITIALIZE_FTL_IF_NEEDED();
 	HANDLE FileHandle = HANDLE_NONE;
 	BSTATUS Status = FindFileByFD(fd, &FileHandle);
 	if (FAILED(Status))
@@ -353,6 +392,7 @@ int sys_seek(int fd, off_t offset, int whence, off_t* new_offset)
 
 int sys_close(int fd)
 {
+	INITIALIZE_FTL_IF_NEEDED();
 	HANDLE FileHandle = HANDLE_NONE;
 	BSTATUS Status = FindFileByFD(fd, &FileHandle);
 	if (FAILED(Status))
@@ -392,11 +432,12 @@ constexpr int ConvertProtection(int prot)
 
 int sys_vm_map(void *hint, size_t size, int prot, int flags, int fd, off_t offset, void **window)
 {
-	// MAP_FIXED not supported, because fixed mapping is not implemented
-	// in a POSIX compliant way.  Use mobile mmap instead.
-	if (flags & MAP_FIXED)
-		return TranslateStatus(STATUS_UNIMPLEMENTED);
+	mlibc::infoLogger() << "sys_vm_map(" << hint << ", " << size << ", " << prot << ", "
+		<< flags << ", " << fd << ", " << offset << ", " << window << ")" << frg::endlog;
+	INITIALIZE_FTL_IF_NEEDED();
 	
+	// Note: MAP_FIXED not supported in a complete way, because overwriting mappings
+	// is not allowed.  This isn't POSIX compliant.
 	void* BaseAddress = hint;
 	size_t ViewSize = size;
 	BSTATUS Status = STATUS_SUCCESS;
@@ -405,7 +446,10 @@ int sys_vm_map(void *hint, size_t size, int prot, int flags, int fd, off_t offse
 		HANDLE FileHandle;
 		Status = FindFileByFD(fd, &FileHandle);
 		if (FAILED(Status))
+		{
+			mlibc::infoLogger() << "\tfailed with status " << Status << frg::endlog;
 			return TranslateStatus(Status);
+		}
 		
 		// first, try to map while specifying the hint
 		Status = OSMapViewOfObject(
@@ -418,8 +462,10 @@ int sys_vm_map(void *hint, size_t size, int prot, int flags, int fd, off_t offse
 			ConvertProtection(prot)
 		);
 		
-		if (FAILED(Status) && Status != STATUS_INVALID_HANDLE)
+		if (FAILED(Status) && Status == STATUS_CONFLICTING_ADDRESSES && (~flags & MAP_FIXED))
 		{
+			mlibc::infoLogger() << "\tfailed with status " << Status << ", trying without the hint" << frg::endlog;
+			
 			// try without specifying the hint
 			BaseAddress = NULL;
 			
@@ -444,10 +490,12 @@ int sys_vm_map(void *hint, size_t size, int prot, int flags, int fd, off_t offse
 			ConvertProtection(prot)
 		);
 		
-		if (FAILED(Status) && Status != STATUS_INVALID_HANDLE)
+		if (FAILED(Status) && Status == STATUS_CONFLICTING_ADDRESSES)
 		{
 			// try without specifying the hint
 			BaseAddress = NULL;
+			
+			mlibc::infoLogger() << "\tfailed with status " << Status << ", trying without the hint" << frg::endlog;
 			
 			Status = OSAllocateVirtualMemory(
 				CURRENT_PROCESS_HANDLE,
@@ -460,7 +508,10 @@ int sys_vm_map(void *hint, size_t size, int prot, int flags, int fd, off_t offse
 	}
 	
 	if (FAILED(Status))
+	{
+		mlibc::infoLogger() << "\tfailed with status " << Status << frg::endlog;
 		return TranslateStatus(Status);
+	}
 	
 	*window = BaseAddress;
 	return 0;

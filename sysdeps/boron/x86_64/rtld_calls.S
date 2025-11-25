@@ -101,4 +101,4 @@
 
 #endif
 
-#include "rtld_calltbl.h"
+#include "../generic/rtld_calltbl.h"
