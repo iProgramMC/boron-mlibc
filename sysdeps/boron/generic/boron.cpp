@@ -224,8 +224,7 @@ static bool FileTableInitialized = false;
 
 #define INITIALIZE_FTL_IF_NEEDED()
 
-// constructor attribute applies to the below function
-__attribute__((constructor))
+// this function is called later
 
 #endif
 
@@ -235,6 +234,18 @@ static void InitializeFileTableCS()
 	if (FAILED(Status))
 		sys_libc_panic();
 }
+
+#ifndef MLIBC_BUILDING_RTLD
+
+static void AssignStandardIOPointers()
+{
+	PPEB Peb = (PPEB) OSGetCurrentPeb();
+	FileTable[0] = Peb->StandardIO[0];
+	FileTable[1] = Peb->StandardIO[1];
+	FileTable[2] = Peb->StandardIO[2];
+}
+
+#endif
 
 // This exits with the output file pointer locked, if it succeeds.
 static BSTATUS AllocateFD(int* FdOut, HANDLE Handle)
@@ -589,3 +600,13 @@ int sys_clock_get(int clock, time_t* secs, long* nanos)
 #endif
 
 } // namespace mlibc
+
+#ifndef MLIBC_BUILDING_RTLD
+
+extern "C" void __InitializeFileTable()
+{
+	mlibc::InitializeFileTableCS();
+	mlibc::AssignStandardIOPointers();
+}
+
+#endif

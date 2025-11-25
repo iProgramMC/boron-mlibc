@@ -96,6 +96,10 @@ if not no_headers
 		'include/boron/rtl/list.h',
 		'include/boron/rtl/rbtree.h',
 		'include/boron/rtl/symdefs.h',
+		subdir: 'boron/rtl',
+		follow_symlinks: true,
+	)
+	install_headers(
 		'include/boron/boron.h',
 		'include/boron/atom.h',
 		'include/boron/csect.h',
