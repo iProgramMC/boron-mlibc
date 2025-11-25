@@ -88,6 +88,7 @@ const int g_statusToErrno[] = {
 	EAGAIN,  // STATUS_BLOCKING_OPERATION, equal to EWOULDBLOCK
 	ENOTEMPTY, // STATUS_DIRECTORY_NOT_EMPTY
 	EIEIO,   // STATUS_OUT_OF_FILE_BOUNDS, not used for userspace
+	ENOTTY,  // STATUS_NOT_A_TERMINAL
 	
 	ENOMEM,  // STATUS_INSUFFICIENT_VA_SPACE
 	EINVAL,  // STATUS_VA_NOT_AT_BASE
@@ -344,7 +345,6 @@ int sys_open(const char* pathname, int flags, mode_t mode, int* fd)
 
 int sys_read(int fd, void* buf, size_t count, ssize_t* bytes_read)
 {
-	INITIALIZE_FTL_IF_NEEDED();
 	HANDLE FileHandle = HANDLE_NONE;
 	BSTATUS Status = FindFileByFD(fd, &FileHandle);
 	if (FAILED(Status))
@@ -362,7 +362,6 @@ int sys_read(int fd, void* buf, size_t count, ssize_t* bytes_read)
 
 int sys_write(int fd, const void* buf, size_t count, ssize_t* bytes_written)
 {
-	INITIALIZE_FTL_IF_NEEDED();
 	HANDLE FileHandle = HANDLE_NONE;
 	BSTATUS Status = FindFileByFD(fd, &FileHandle);
 	if (FAILED(Status))
@@ -595,6 +594,17 @@ int sys_clock_get(int clock, time_t* secs, long* nanos)
 	ticks *= 1000000000;
 	*nanos = (long)(ticks / frequency);
 	return 0;
+}
+
+int sys_isatty(int fd)
+{
+	HANDLE FileHandle = HANDLE_NONE;
+	BSTATUS Status = FindFileByFD(fd, &FileHandle);
+	if (FAILED(Status))
+		return TranslateStatus(Status);
+	
+	Status = OSCheckIsTerminalFile(FileHandle);
+	return TranslateStatus(Status);
 }
 
 #endif
