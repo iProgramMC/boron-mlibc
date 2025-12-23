@@ -1,10 +1,15 @@
+// Num  - System Call Number
+// AC   - Argument Count
+// Name - System Call Export Name
+//
+//   Num AC Name
 CALL 0,  5, OSAllocateVirtualMemory
 CALL 1,  1, OSCheckIsTerminalFile
 CALL 2,  1, OSClose
 CALL 3,  4, OSCreateEvent
 CALL 4,  2, OSCreateMutex
 CALL 5,  4, OSCreatePipe
-CALL 6,  4, OSCreateProcessInternal
+CALL 6,  5, OSCreateProcessInternal
 CALL 7,  3, OSCreateTerminal
 CALL 8,  3, OSCreateTerminalIoHandles
 CALL 9,  6, OSCreateThread
@@ -38,7 +43,7 @@ CALL 36, 1, OSResetEvent
 //   37     OSSeekFile
 CALL 38, 1, OSSetCurrentPeb
 CALL 39, 1, OSSetCurrentTeb
-CALL 30, 1, OSSetEvent
+CALL 40, 1, OSSetEvent
 CALL 41, 1, OSSetExitCode
 CALL 42, 2, OSSetPebProcess
 CALL 43, 2, OSSetSuspendedThread
@@ -49,6 +54,7 @@ CALL 47, 5, OSWaitForMultipleObjects
 CALL 48, 3, OSWaitForSingleObject
 //   49     OSWriteFile
 CALL 50, 4, OSWriteVirtualMemory
+CALL 51, 2, OSForkProcessInternal
 
 #ifdef IS_64_BIT
 CALL 24, 7, OSMapViewOfObject

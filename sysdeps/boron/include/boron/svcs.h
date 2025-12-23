@@ -30,7 +30,8 @@ BSTATUS OSCreateProcessInternal(
 	PHANDLE OutHandle,
 	POBJECT_ATTRIBUTES ObjectAttributes,
 	HANDLE ParentProcessHandle,
-	bool InheritHandles
+	bool InheritHandles,
+	bool DeepCloneHandles
 );
 
 #endif
@@ -62,6 +63,8 @@ BSTATUS OSDuplicateHandle(HANDLE SourceHandle, HANDLE DestinationProcessHandle, 
 NO_RETURN void OSExitProcess(int ExitCode);
 
 NO_RETURN void OSExitThread();
+
+BSTATUS OSForkProcessInternal(PHANDLE OutChildHandle);
 
 BSTATUS OSFreeVirtualMemory(
 	HANDLE ProcessHandle,
