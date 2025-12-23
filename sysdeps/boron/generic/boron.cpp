@@ -8,6 +8,10 @@
 #include <abi-bits/seek-whence.h>
 #include <abi-bits/vm-flags.h>
 #include <abi-bits/stat.h>
+#include <abi-bits/pid_t.h>
+#include <abi-bits/wait.h>
+
+#include <abis/linux/resource.h>
 
 #include <bits/off_t.h>
 #include <bits/ssize_t.h>
@@ -25,9 +29,16 @@
 namespace mlibc {
 
 #ifdef MLIBC_BUILDING_RTLD
+
 constexpr int MAX_FDS = 64; // RTLD doesn't need that many files.  Increase if you need more than like 64 libraries
+
 #else
+	
 constexpr int MAX_FDS = 1024;
+
+// TODO: increase this limit.  But currently, the scheduler allows you to wait for up to 64 items at a time.
+constexpr int MAX_CHILD_PROCESSES = MAXIMUM_WAIT_BLOCKS;
+
 #endif
 
 // Translates a status code to an errno.
@@ -232,8 +243,10 @@ static bool FileTableInitialized = false;
 static void InitializeFileTableCS()
 {
 	BSTATUS Status = OSInitializeCriticalSection(&FileTableLock);
-	if (FAILED(Status))
+	if (FAILED(Status)) {
+		sys_libc_log("ERROR: Cannot initialize file table lock.\n");
 		sys_libc_panic();
+	}
 }
 
 #ifndef MLIBC_BUILDING_RTLD
@@ -607,16 +620,230 @@ int sys_isatty(int fd)
 	return TranslateStatus(Status);
 }
 
+int sys_sleep(time_t* psecs, long* pnanos)
+{
+	time_t secs = *psecs;
+	long   nanos = *pnanos;
+	
+	// TODO: avoid overflow here
+	int time = (int)(secs * 1000 + nanos / 1000000);
+	BSTATUS Status = OSSleep(time);
+	
+	return TranslateStatus(Status);
+}
+
+static OS_CRITICAL_SECTION ChildProcessTableLock;
+static HANDLE ChildProcessTable[MAX_CHILD_PROCESSES];
+static int ChildProcessCount = 0;
+
+void InitializeProcessTable()
+{
+	BSTATUS Status = OSInitializeCriticalSection(&ChildProcessTableLock);
+	if (FAILED(Status)) {
+		sys_libc_log("ERROR: Cannot initialize process table lock.\n");
+		sys_libc_panic();
+	}
+}
+
+int sys_fork(pid_t* outChildPid)
+{
+	OSEnterCriticalSection(&ChildProcessTableLock);
+	if (ChildProcessCount >= MAX_CHILD_PROCESSES)
+	{
+		sys_libc_log("sys_fork: Reached child process limit.\n");
+		OSLeaveCriticalSection(&ChildProcessTableLock);
+		return EAGAIN;
+	}
+	
+	HANDLE OutChildHandle = HANDLE_NONE;
+	BSTATUS Status = OSForkProcessInternal(&OutChildHandle);
+	
+	if (Status == STATUS_IS_CHILD_PROCESS)
+	{
+		*outChildPid = 0;
+		
+		// Since we're inside the child process, we need to erase the child process
+		// table.  waitpid(-1) shouldn't work inside the child process just as it
+		// would inside the parent.
+		for (int i = 0; i < ChildProcessCount; i++)
+		{
+			OSClose(ChildProcessTable[i]);
+			ChildProcessTable[i] = 0;
+		}
+		
+		ChildProcessCount = 0;
+		
+		OSLeaveCriticalSection(&ChildProcessTableLock);
+		return 0;
+	}
+	
+	if (SUCCEEDED(Status))
+	{
+		// TODO: Does forking *really* depend on a globally available ID?
+		// If so, then we *might* just want to actually implement it the
+		// proper way.
+		
+		// NOTE: adding +1 here because pid == 0 means that we're inside the
+		// child process.
+		*outChildPid = ChildProcessCount + 1;
+		ChildProcessTable[ChildProcessCount++] = OutChildHandle;
+	}
+	
+	OSLeaveCriticalSection(&ChildProcessTableLock);
+	return TranslateStatus(Status);
+}
+
+int sys_waitpid(pid_t pid, int* out_status, int flags, struct rusage* ru, pid_t* ret_pid)
+{
+	BSTATUS Status = STATUS_SUCCESS;
+	
+	if (ru) {
+		mlibc::infoLogger() << "mlibc: sys_waitpid: struct rusage is unsupported" << frg::endlog;
+		return ENOSYS;
+	}
+	
+	*ret_pid = -1;
+	
+	if (ChildProcessCount == 0) {
+		return ECHILD;
+	}
+	
+	int Timeout = WAIT_TIMEOUT_INFINITE;
+	
+	if (flags & WNOHANG) {
+		// poll mode
+		Timeout = 0;
+	}
+	
+	if (pid < 0)
+	{
+		// TODO: process group ID implementation
+		// for now just wait for any of the pids
+		pid = 0;
+	}
+	
+	HANDLE WaitedHandles[MAX_CHILD_PROCESSES];
+	HANDLE OriginalHandles[MAX_CHILD_PROCESSES];
+	int WaitedHandleCount = 0;
+	
+	OSEnterCriticalSection(&ChildProcessTableLock);
+	if (pid == 0)
+	{
+		for (int i = 0; i < ChildProcessCount; i++)
+		{
+			OriginalHandles[i] = ChildProcessTable[i];
+			Status = OSDuplicateHandle(ChildProcessTable[i], CURRENT_PROCESS_HANDLE, &WaitedHandles[i], 0);
+			if (SUCCEEDED(Status))
+				continue;
+
+			mlibc::infoLogger() << "mlibc: sys_waitpid: (multi-wait) OSDuplicateHandle failed with status " << Status << frg::endlog;
+			WaitedHandleCount = i;
+			OSLeaveCriticalSection(&ChildProcessTableLock);
+			goto CloseEverythingAndFail;
+		}
+		
+		WaitedHandleCount = ChildProcessCount;
+	}
+	else if (pid > ChildProcessCount)
+	{
+		OSLeaveCriticalSection(&ChildProcessTableLock);
+		return ECHILD;
+	}
+	else
+	{
+		OriginalHandles[0] = ChildProcessTable[pid - 1];
+		Status = OSDuplicateHandle(ChildProcessTable[pid - 1], CURRENT_PROCESS_HANDLE, &WaitedHandles[0], 0);
+		if (FAILED(Status))
+		{
+			mlibc::infoLogger() << "mlibc: sys_waitpid: (single-wait) OSDuplicateHandle failed with status " << Status << frg::endlog;
+			OSLeaveCriticalSection(&ChildProcessTableLock);
+			goto CloseEverythingAndFail;
+		}
+		
+		WaitedHandleCount = 1;
+	}
+	
+	OSLeaveCriticalSection(&ChildProcessTableLock);
+	
+	// Handles duplicated, now wait for a process to exit.
+	Status = OSWaitForMultipleObjects(
+		WaitedHandleCount,
+		WaitedHandles,
+		WAIT_ANY_OBJECT,
+		true,
+		Timeout
+	);
+	
+	if (Status >= STATUS_RANGE_WAIT && Status < STATUS_RANGE_WAIT + MAXIMUM_WAIT_BLOCKS)
+	{
+		// This specific process has exited, so take a look at which.
+		int ProcessIndex = Status - STATUS_RANGE_WAIT;
+		HANDLE Process = WaitedHandles[ProcessIndex];
+		
+		int ExitCode = 1;
+		Status = OSGetExitCodeProcess(Process, &ExitCode);
+		if (FAILED(Status)) {
+			mlibc::infoLogger() << "mlibc: sys_waitpid: OSGetExitCodeProcess returned status " << RtlGetStatusString(Status) << frg::endlog;
+		}
+		
+		// TODO: Convert exit codes into POSIX-compatible status codes inspectable
+		// with macros such as WIFEXITED, WEXITSTATUS etc.
+		
+		// According to the Linux ABI, the status code is composed of the following:
+		// - 8 bits: Signal number (or 0 if exited normally)
+		// - 8 bits: Return value from main() (if signal number is 0)
+		//
+		// Additionally status == 0xFFFF if the process is "continued", and the signal
+		// number is 0x7F if the process is "stopped".  We'll implement signals later.
+		int OutStatus = ExitCode & 0xFF;
+		if (ExitCode && !OutStatus)
+			OutStatus = 1;
+		
+		// TODO: the PID could be outdated if they forked again
+		*out_status = OutStatus << 8;
+		*ret_pid = ProcessIndex + 1;
+		Status = STATUS_SUCCESS;
+		
+		// Now we need to remove the child process from the child process table.
+		OSEnterCriticalSection(&ChildProcessTableLock);
+		
+		bool Removed = false;
+		for (int i = 0; i < ChildProcessCount; i++)
+		{
+			if (ChildProcessTable[i] != OriginalHandles[ProcessIndex])
+				continue;
+			
+			Removed = true;
+			ChildProcessTable[i] = ChildProcessTable[ChildProcessCount - 1];
+			ChildProcessCount--;
+		}
+		
+		OSClose(OriginalHandles[ProcessIndex]);
+		
+		if (!Removed)
+			mlibc::infoLogger() << "mlibc: sys_waitpid: Child process table was mutated. Can't find the original handle anymore." << frg::endlog;
+		
+		OSLeaveCriticalSection(&ChildProcessTableLock);
+	}
+	
+CloseEverythingAndFail:
+	for (int i = 0; i < WaitedHandleCount; i++)
+		OSClose(WaitedHandles[i]);
+	
+	return TranslateStatus(Status);
+}
+
 #endif
 
 } // namespace mlibc
 
 #ifndef MLIBC_BUILDING_RTLD
 
-extern "C" void __InitializeFileTable()
+extern "C" void __InitializeLibrary()
 {
 	mlibc::InitializeFileTableCS();
 	mlibc::AssignStandardIOPointers();
+	mlibc::InitializeProcessTable();
 }
 
 #endif

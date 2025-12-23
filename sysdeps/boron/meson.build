@@ -1,8 +1,8 @@
 sysdep_supported_options = {
-	'posix': false,
+	'posix': true,
 	'linux': false,
-	'glibc': false,
-	'bsd': false,
+	'glibc': true,
+	'bsd': true,
 }
 
 # libc will link against libboron.so.  rtld doesn't have

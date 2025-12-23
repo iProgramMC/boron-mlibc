@@ -175,13 +175,13 @@ extern "C" void __mlibc_boron_prepareStack(uintptr_t* StackTop)
 #else
 
 extern "C" void __dlapi_enter(uintptr_t *);
-extern "C" void __InitializeFileTable();
+extern "C" void __InitializeLibrary();
 
 extern char **environ;
 
 extern "C" void __mlibc_entry(int (*main_fn)(int argc, char *argv[], char *env[]), uintptr_t *entry_stack) {
 	__dlapi_enter(entry_stack);
-	__InitializeFileTable();
+	__InitializeLibrary();
 	auto result = main_fn(mlibc::entry_stack.argc, mlibc::entry_stack.argv, environ);
 	exit(result);
 }
