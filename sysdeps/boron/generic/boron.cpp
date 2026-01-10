@@ -120,6 +120,10 @@ constexpr int TranslateStatus(BSTATUS Status)
 	
 	mlibc::infoLogger() << "mlibc::TranslateStatus(" << Status << "), RA: " << __builtin_return_address(0) << "." << frg::endlog;
 	
+#ifndef MLIBC_BUILDING_RTLD
+	mlibc::infoLogger() << "\tStatus " << Status << " is " << RtlGetStatusString(Status) << frg::endlog;
+#endif
+	
 	if (Status >= STATUS_RANGE_ABANDONED_WAIT &&
 		Status < STATUS_RANGE_ABANDONED_WAIT + MAXIMUM_WAIT_BLOCKS)
 		return EOWNERDEAD;
@@ -254,9 +258,9 @@ static void InitializeFileTableCS()
 static void AssignStandardIOPointers()
 {
 	PPEB Peb = (PPEB) OSGetCurrentPeb();
-	FileTable[0] = Peb->StandardIO[0];
-	FileTable[1] = Peb->StandardIO[1];
-	FileTable[2] = Peb->StandardIO[2];
+	
+	for (int i = 0; i < 3; i++)
+		FileTable[i] = Peb->StandardIO[i];
 }
 
 #endif
@@ -560,12 +564,11 @@ int sys_vm_map(void *hint, size_t size, int prot, int flags, int fd, off_t offse
 
 int sys_vm_unmap(void* pointer, size_t size)
 {
-	// TODO: Allow partial unmapping.
 	BSTATUS Status = OSFreeVirtualMemory(
 		CURRENT_PROCESS_HANDLE,
 		pointer,
 		size,
-		MEM_RELEASE
+		MEM_RELEASE | MEM_PARTIAL
 	);
 	
 	return TranslateStatus(Status);
@@ -613,10 +616,15 @@ int sys_isatty(int fd)
 {
 	HANDLE FileHandle = HANDLE_NONE;
 	BSTATUS Status = FindFileByFD(fd, &FileHandle);
-	if (FAILED(Status))
+	if (FAILED(Status)) {
+		mlibc::infoLogger() << "sys_isatty(" << fd << ") failed because FindFileByFD doesn't work" << frg::endlog;
 		return TranslateStatus(Status);
+	}
 	
 	Status = OSCheckIsTerminalFile(FileHandle);
+	if (FAILED(Status)) {
+		mlibc::infoLogger() << "sys_isatty(" << fd << ") failed because OSCheckIsTerminalFile doesn't work. FileHandle = " << FileHandle << frg::endlog;
+	}
 	return TranslateStatus(Status);
 }
 
