@@ -10,6 +10,7 @@
 #include <abi-bits/stat.h>
 #include <abi-bits/pid_t.h>
 #include <abi-bits/wait.h>
+#include <abi-bits/fcntl.h>
 
 #include <abis/linux/resource.h>
 
@@ -20,10 +21,13 @@
 
 #include <mlibc/debug.hpp>
 
+// rtld doesn't support thread locals nor does it contain a table of failure code strings.
 #ifdef MLIBC_BUILDING_RTLD
 #define THREAD_LOCAL_COND
+#define DECODE_STATUS_IF_POSSIBLE(Stat) (Stat)
 #else
 #define THREAD_LOCAL_COND thread_local
+#define DECODE_STATUS_IF_POSSIBLE(Stat) RtlGetStatusString(Stat)
 #endif
 
 namespace mlibc {
@@ -40,6 +44,21 @@ constexpr int MAX_FDS = 1024;
 constexpr int MAX_CHILD_PROCESSES = MAXIMUM_WAIT_BLOCKS;
 
 #endif
+
+struct FileTableEntry
+{
+	HANDLE Handle;
+	int Flags;
+};
+
+enum FileTableEntryFlags
+{
+	FILE_TABLE_CLOSE_ON_EXEC = 1 << 0,
+};
+
+static FileTableEntry gFileTable[MAX_FDS];
+static OS_CRITICAL_SECTION gFileTableLock;
+static THREAD_LOCAL_COND HANDLE gCurrentDirectory = HANDLE_NONE;
 
 // Translates a status code to an errno.
 const int g_statusToErrno[] = {
@@ -213,17 +232,13 @@ int sys_anon_free(void* pointer, size_t size)
 		MEM_RELEASE
 	);
 	
-	if (FAILED(Status))
+	if (FAILED(Status)) {
+		mlibc::infoLogger() << "sys_anon_free failed: " << DECODE_STATUS_IF_POSSIBLE(Status) << frg::endlog;
 		return TranslateStatus(Status);
+	}
 	
 	return 0;
 }
-
-// NOTE: DO NOT enter g_fileTableCS *after* you enter the CS of a file!
-
-static HANDLE FileTable[MAX_FDS];
-static OS_CRITICAL_SECTION FileTableLock;
-static THREAD_LOCAL_COND HANDLE g_currentDirectory = HANDLE_NONE;
 
 #ifdef MLIBC_BUILDING_RTLD
 
@@ -246,7 +261,7 @@ static bool FileTableInitialized = false;
 
 static void InitializeFileTableCS()
 {
-	BSTATUS Status = OSInitializeCriticalSection(&FileTableLock);
+	BSTATUS Status = OSInitializeCriticalSection(&gFileTableLock);
 	if (FAILED(Status)) {
 		sys_libc_log("ERROR: Cannot initialize file table lock.\n");
 		sys_libc_panic();
@@ -255,37 +270,120 @@ static void InitializeFileTableCS()
 
 #ifndef MLIBC_BUILDING_RTLD
 
+constexpr int START_CONTEXT_SIGNATURE = 0xB0407981;
+struct MlibcStartContext
+{
+	int StartContextSignature;
+	FileTableEntry FileTable[MAX_FDS];
+	HANDLE CurrentDirectory;
+};
+
+static void FreeStartingContext()
+{
+	PPEB Peb = (PPEB) OSGetCurrentPeb();
+	
+	OSFreeVirtualMemory(
+		CURRENT_PROCESS_HANDLE,
+		Peb->StartingContext,
+		Peb->StartingContextSize,
+		MEM_RELEASE
+	);
+	
+	Peb->StartingContext = NULL;
+	Peb->StartingContextSize = 0;
+}
+
+static void* AllocStartingContext(size_t* Size)
+{
+	void* Mem = NULL;
+	if (sys_anon_allocate(sizeof(MlibcStartContext), &Mem)) {
+		return NULL;
+	}
+	
+	*Size = sizeof(MlibcStartContext);
+	MlibcStartContext* Context = reinterpret_cast<MlibcStartContext*>(Mem);
+	
+	Context->StartContextSignature = START_CONTEXT_SIGNATURE;
+	
+	for (int i = 0; i < MAX_FDS; i++)
+	{
+		Context->FileTable[i] = gFileTable[i];
+	}
+	
+	Context->CurrentDirectory = gCurrentDirectory;
+	return Mem;
+}
+
+// note: rtld probably shouldn't really care what the file table of the actual process looks like...
 static void AssignStandardIOPointers()
 {
 	PPEB Peb = (PPEB) OSGetCurrentPeb();
 	
-	for (int i = 0; i < 3; i++)
-		FileTable[i] = Peb->StandardIO[i];
+	for (int i = 0; i < 3; i++) {
+		gFileTable[i].Handle = Peb->StandardIO[i];
+		gFileTable[i].Flags = 0;
+	}
+	
+	if (!Peb->StartingContext)
+		return;
+	
+	// We have received a starting context - this process was probably invoked using OSReplaceProcess.
+	MlibcStartContext* Context = reinterpret_cast<MlibcStartContext*>(Peb->StartingContext);
+	if (Context->StartContextSignature != START_CONTEXT_SIGNATURE)
+	{
+		sys_libc_log("Start context provided, but signature is incorrect, ignoring");
+		FreeStartingContext();
+		return;
+	}
+	
+	for (int i = 0; i < MAX_FDS; i++)
+	{
+		gFileTable[i] = Context->FileTable[i];
+		
+		if (gFileTable[i].Flags & FILE_TABLE_CLOSE_ON_EXEC)
+		{
+			OSClose(gFileTable[i].Handle);
+			gFileTable[i].Handle = HANDLE_NONE;
+			continue;
+		}
+		
+		if (gFileTable[i].Handle != HANDLE_NONE)
+		{
+			if (OSCheckIsValidHandle(gFileTable[i].Handle) == STATUS_INVALID_HANDLE)
+			{
+				mlibc::infoLogger() << "lost handle " << gFileTable[i].Handle << " after replacement" << frg::endlog;
+				gFileTable[i].Handle = HANDLE_NONE;
+			}
+		}
+	}
+	
+	gCurrentDirectory = Context->CurrentDirectory;
+	FreeStartingContext();
 }
 
 #endif
 
-// This exits with the output file pointer locked, if it succeeds.
-static BSTATUS AllocateFD(int* FdOut, HANDLE Handle)
+static BSTATUS AllocateFD(int* FdOut, HANDLE Handle, int Flags)
 {
 	INITIALIZE_FTL_IF_NEEDED();
-	OSEnterCriticalSection(&FileTableLock);
+	OSEnterCriticalSection(&gFileTableLock);
 	
 	for (int i = 0; i < MAX_FDS; i++)
 	{
-		if (FileTable[i] != HANDLE_NONE)
+		if (gFileTable[i].Handle != HANDLE_NONE)
 			continue;
 		
 		// critical section initialized, mark as occupied and return
-		FileTable[i] = Handle;
+		gFileTable[i].Handle = Handle;
+		gFileTable[i].Flags = Flags;
 		*FdOut = i;
 		
-		OSLeaveCriticalSection(&FileTableLock);
+		OSLeaveCriticalSection(&gFileTableLock);
 		return STATUS_SUCCESS;
 	}
 	
 	sys_libc_log("ERROR: too many handles opened!");
-	OSLeaveCriticalSection(&FileTableLock);
+	OSLeaveCriticalSection(&gFileTableLock);
 	return STATUS_TOO_MANY_HANDLES;
 }
 
@@ -295,15 +393,15 @@ static BSTATUS ReleaseFD(int Fd)
 	if (Fd < 0 || Fd >= MAX_FDS)
 		return STATUS_INVALID_HANDLE;
 	
-	OSEnterCriticalSection(&FileTableLock);
-	if (FileTable[Fd] == HANDLE_NONE)
+	OSEnterCriticalSection(&gFileTableLock);
+	if (gFileTable[Fd].Handle == HANDLE_NONE)
 	{
-		OSLeaveCriticalSection(&FileTableLock);
+		OSLeaveCriticalSection(&gFileTableLock);
 		return STATUS_INVALID_HANDLE;
 	}
 	
-	FileTable[Fd] = 0;
-	OSLeaveCriticalSection(&FileTableLock);
+	gFileTable[Fd].Handle = HANDLE_NONE;
+	OSLeaveCriticalSection(&gFileTableLock);
 	return STATUS_SUCCESS;
 }
 
@@ -314,16 +412,16 @@ static BSTATUS FindFileByFD(int Fd, PHANDLE OutHandle)
 	if (Fd < 0 || Fd >= MAX_FDS)
 		return STATUS_INVALID_HANDLE;
 	
-	OSEnterCriticalSection(&FileTableLock);
+	OSEnterCriticalSection(&gFileTableLock);
 	
-	if (FileTable[Fd] == HANDLE_NONE)
+	if (gFileTable[Fd].Handle == HANDLE_NONE)
 	{
-		OSLeaveCriticalSection(&FileTableLock);
+		OSLeaveCriticalSection(&gFileTableLock);
 		return STATUS_INVALID_HANDLE;
 	}
 	
-	*OutHandle = FileTable[Fd];
-	OSLeaveCriticalSection(&FileTableLock);
+	*OutHandle = gFileTable[Fd].Handle;
+	OSLeaveCriticalSection(&gFileTableLock);
 	return STATUS_SUCCESS;
 }
 
@@ -337,7 +435,7 @@ int sys_open(const char* pathname, int flags, mode_t mode, int* fd)
 	OBJECT_ATTRIBUTES Attributes;
 	Attributes.ObjectName = pathname;
 	Attributes.ObjectNameLength = strlen(pathname);
-	Attributes.RootDirectory = g_currentDirectory;
+	Attributes.RootDirectory = gCurrentDirectory;
 	Attributes.OpenFlags = 0;
 	
 	// TODO: flags and mode ignored for now
@@ -349,7 +447,12 @@ int sys_open(const char* pathname, int flags, mode_t mode, int* fd)
 	if (FAILED(Status))
 		return TranslateStatus(Status);
 	
-	Status = AllocateFD(&Fd, Handle);
+	int OtherFlags = 0;
+	if (flags & O_CLOEXEC) {
+		OtherFlags |= FILE_TABLE_CLOSE_ON_EXEC;
+	}
+	
+	Status = AllocateFD(&Fd, Handle, OtherFlags);
 	if (FAILED(Status))
 	{
 		OSClose(Handle);
@@ -698,6 +801,83 @@ int sys_fork(pid_t* outChildPid)
 	}
 	
 	OSLeaveCriticalSection(&ChildProcessTableLock);
+	return TranslateStatus(Status);
+}
+
+int sys_execve(const char *path, const char *argv[], const char *envp[])
+{
+	BSTATUS Status;
+	int Result;
+	const char **Search = NULL;
+	char *Work = NULL;
+	char *Environment = NULL;
+	size_t ArgumentSize = 1, EnvironmentSize = 0;
+	
+	Search = argv;
+	while (*Search)
+	{
+		ArgumentSize += strlen(*Search) + 1;
+		Search++;
+	}
+	
+	char *Argument = NULL;
+	Result = sys_anon_allocate(ArgumentSize, (void**) &Argument);
+	if (Result)
+		return Result;
+	
+	Search = argv;
+	Work = Argument;
+	while (*Search) {
+		strcpy(Work, *Search);
+		Work += strlen(*Search) + 1;
+		Search++;
+	}
+	
+	if (envp)
+	{
+		Search = envp;
+		EnvironmentSize = 1;
+		while (*Search)
+		{
+			EnvironmentSize += strlen(*Search);
+			Search++;
+		}
+		
+		Environment = NULL;
+		Result = sys_anon_allocate(EnvironmentSize, (void**) &Environment);
+		if (Result) {
+			sys_anon_free(Argument, ArgumentSize);
+			return Result;
+		}
+		
+		Search = envp;
+		Work = Environment;
+		while (*Search) {
+			strcpy(Work, *Search);
+			Work += strlen(*Search) + 1;
+			Search++;
+		}
+	}
+	
+	size_t StartContextSize = 0;
+	void *StartContext = AllocStartingContext(&StartContextSize);
+	if (!StartContext) {
+		sys_anon_free(Argument, ArgumentSize);
+		sys_anon_free(Environment, EnvironmentSize);
+		return ENOMEM;
+	}
+	
+	Status = OSReplaceProcess(path, Argument, Environment, StartContext, StartContextSize);
+	
+	if (SUCCEEDED(Status)) {
+		sys_libc_log("OSReplaceProcess returned success and yet we returned!");
+		sys_libc_panic();
+	}
+	
+	sys_anon_free(Argument, ArgumentSize);
+	sys_anon_free(Environment, EnvironmentSize);
+	sys_anon_free(StartContext, StartContextSize);
+	
 	return TranslateStatus(Status);
 }
 
