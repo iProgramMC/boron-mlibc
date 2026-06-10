@@ -15,7 +15,7 @@ CALL 8,  3, OSCreateTerminalIoHandles
 CALL 9,  6, OSCreateThread
 CALL 10, 6, OSDeviceIoControl
 CALL 11, 4, OSDuplicateHandle
-CALL 12, 1, OSExitProcess
+CALL 12, 1, OSExitProcessInternal
 CALL 13, 0, OSExitThread
 CALL 14, 4, OSFreeVirtualMemory
 CALL 15, 2, OSGetAlignmentFile
@@ -58,15 +58,41 @@ CALL 51, 2, OSForkProcessInternal
 CALL 52, 3, OSQueryVirtualMemoryInformation
 CALL 53, 0, OSCloseAllUninheritableHandles
 CALL 54, 1, OSCheckIsValidHandle
+CALL 55, 4, OSCreateFile
+CALL 56, 4, OSCreateDirectory
+CALL 57, 6, OSCreateSymbolicLink
+CALL 58, 3, OSSetImageNameProcess
+CALL 59, 4, OSQuerySystemInformation
+CALL 60, 1, OSShutDownSystem
 
+// The following system calls use at least one 64-bit parameter.
+// On 32-bit, 64-bit arguments typically get passed as high/low pairs of 32-bit arguments.
 #ifdef IS_64_BIT
+
 CALL 24, 7, OSMapViewOfObject
 CALL 33, 6, OSReadFile
 CALL 37, 4, OSSeekFile
 CALL 49, 7, OSWriteFile
+
+#elif defined TARGET_ARM
+
+// ARM is a special exception: 64-bit arguments placed on the stack are 8-byte aligned.
+// So we need to take care of that in the following functions.
+
+// insert a dummy padding parameter before SectionOffset low/high pair
+CALL 24, 9, OSMapViewOfObject
+// no change, ByteOffset occupies r2 and r3
+CALL 33, 7, OSReadFile
+// r0 = FileHandle, r1 = dummy padding, r2 and r3 = Offset
+CALL 37, 5, OSSeekFile
+// no change, ByteOffset occupies r2 and r3
+CALL 49, 8, OSWriteFile
+
 #else
+
 CALL 24, 8, OSMapViewOfObject
 CALL 33, 7, OSReadFile
 CALL 37, 5, OSSeekFile
 CALL 49, 8, OSWriteFile
+
 #endif

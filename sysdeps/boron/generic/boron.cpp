@@ -1,3 +1,4 @@
+#define IS_BORON_DLL
 #include <boron/boron.h>
 #include <boron/svcs.h>
 
@@ -167,7 +168,7 @@ void sys_libc_log(const char* message)
 void sys_libc_panic()
 {
 	sys_libc_log("mlibc panic!!\n");
-	OSExitProcess(1);
+	OSExitProcessInternal(1);
 }
 
 int sys_tcb_set(void* pointer)
@@ -269,6 +270,27 @@ static void InitializeFileTableCS()
 }
 
 #ifndef MLIBC_BUILDING_RTLD
+
+static HANDLE OSDLLGetCurrentDirectory()
+{
+	DbgPrint("mlibc::OSDLLGetCurrentDirectory");
+	return gCurrentDirectory;
+}
+
+static void OSDLLSetCurrentDirectory(HANDLE Handle)
+{
+	DbgPrint("mlibc::OSDLLSetCurrentDirectory");
+	gCurrentDirectory = Handle;
+}
+
+static void InitializeLibboronOverrides()
+{
+	PPEB Peb = (PPEB) OSGetCurrentPeb();
+	
+	Peb->Override.BlockTebAccess = true;
+	Peb->Override.GetCurrentDirectory = &OSDLLGetCurrentDirectory;
+	Peb->Override.SetCurrentDirectory = &OSDLLSetCurrentDirectory;
+}
 
 constexpr int START_CONTEXT_SIGNATURE = 0xB0407981;
 struct MlibcStartContext
@@ -409,14 +431,17 @@ static BSTATUS ReleaseFD(int Fd)
 static BSTATUS FindFileByFD(int Fd, PHANDLE OutHandle)
 {
 	INITIALIZE_FTL_IF_NEEDED();
-	if (Fd < 0 || Fd >= MAX_FDS)
+	if (Fd < 0 || Fd >= MAX_FDS) {
+		mlibc::infoLogger() << "FindFileByFD(" << Fd << ") failed because the handle is out of range" << frg::endlog;
 		return STATUS_INVALID_HANDLE;
+	}
 	
 	OSEnterCriticalSection(&gFileTableLock);
 	
 	if (gFileTable[Fd].Handle == HANDLE_NONE)
 	{
 		OSLeaveCriticalSection(&gFileTableLock);
+		mlibc::infoLogger() << "FindFileByFD(" << Fd << ") failed because there is no file open here" << frg::endlog;
 		return STATUS_INVALID_HANDLE;
 	}
 	
@@ -548,10 +573,15 @@ int sys_close(int fd)
 
 constexpr int FlagsToAllocationType(int flags)
 {
-	int AllocationType = MEM_RESERVE | MEM_COMMIT;
+	int AllocationType = MEM_COMMIT;
+	
+	// you must specify MEM_RESERVE if allocating anonymous memory, but NOT when mapping files.
+	if (flags & MAP_ANONYMOUS)
+		AllocationType |= MEM_RESERVE;
 	
 	// by default memory is private.
-	if (flags & MAP_SHARED) AllocationType |= MEM_SHARED;
+	if (flags & MAP_SHARED)
+		AllocationType |= MEM_SHARED;
 	
 	// MAP_FIXED allows overwriting of mmap regions.
 	if (flags & MAP_FIXED)
@@ -559,8 +589,10 @@ constexpr int FlagsToAllocationType(int flags)
 	
 #ifdef MAP_FIXED_NOREPLACE
 	// MAP_FIXED_NOREPLACE doesn't allow overwriting mmap regions.
-	if (flags & MAP_FIXED_NOREPLACE)
+	if (flags & MAP_FIXED_NOREPLACE) {
 		AllocationType |= MEM_FIXED;
+		AllocationType &= ~MEM_OVERRIDE;
+	}
 #endif
 	
 	return AllocationType;
@@ -595,7 +627,7 @@ int sys_vm_map(void *hint, size_t size, int prot, int flags, int fd, off_t offse
 		Status = FindFileByFD(fd, &FileHandle);
 		if (FAILED(Status))
 		{
-			mlibc::infoLogger() << "\tfailed with status " << Status << frg::endlog;
+			mlibc::infoLogger() << "\tnon-anon mapping failed at FindFileByFD with status " << Status << frg::endlog;
 			return TranslateStatus(Status);
 		}
 		
@@ -804,11 +836,11 @@ int sys_fork(pid_t* outChildPid)
 	return TranslateStatus(Status);
 }
 
-int sys_execve(const char *path, const char *argv[], const char *envp[])
+int sys_execve(const char *path, char *const argv[], char *const envp[])
 {
 	BSTATUS Status;
 	int Result;
-	const char **Search = NULL;
+	const char *const *Search = NULL;
 	char *Work = NULL;
 	char *Environment = NULL;
 	size_t ArgumentSize = 1, EnvironmentSize = 0;
@@ -1027,11 +1059,21 @@ CloseEverythingAndFail:
 
 #ifndef MLIBC_BUILDING_RTLD
 
-extern "C" void __InitializeLibrary()
+extern "C"
+void __InitializeLibrary()
 {
+	mlibc::InitializeLibboronOverrides();
 	mlibc::InitializeFileTableCS();
 	mlibc::AssignStandardIOPointers();
 	mlibc::InitializeProcessTable();
+}
+
+// overriding the one in libboron.so
+extern "C"
+HANDLE OSGetCurrentDirectory()
+{
+	DbgPrint("Calling mlibc OSGetCurrentDirectory()");
+	return mlibc::gCurrentDirectory;
 }
 
 #endif
